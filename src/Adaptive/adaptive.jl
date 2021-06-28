@@ -6,17 +6,15 @@ Adaptive functionals
 	1. mark
 	2. refine
 """ 
-# include("../BGFC/AtC.jl")
 module Adaptive
 using JuLIP
 using LinearAlgebra
 
-# import JuAtC: AtC
-# include("../BGFC/AtC.jl")
-# include("../BGFC/utils.jl")
-# include("../BGFC/FIO.jl")
+using JuAtC
+import JuAtC: ACFIO
+import JuAtC: AtC, get_at_boundary
 
-function mark(atc::JuAtC.AtC{Float64}, Est::Vector{Float64}; Rbuf = 2)
+function mark(atc::AtC{Float64}, Est::Vector{Float64}; Rbuf = 2)
 	v = sortperm(Est, rev=true)
 	TType = atc.data["TType"]
 	Tet = atc.T
@@ -24,7 +22,7 @@ function mark(atc::JuAtC.AtC{Float64}, Est::Vector{Float64}; Rbuf = 2)
 	R = Int((atc.Ra + atc.bw)/rnn(:W)) + Rbuf
 
 	at = bulk(:W, cubic=true)*(R+1)  # Rbuf = 2 by default and expand one layer
-	XIdx = Main.get_at_boundary(at)
+	XIdx = get_at_boundary(at)
 	X = positions(at) |> mat
 	X = X[:, XIdx]
 	XType = atc.data["XType"]
@@ -32,9 +30,7 @@ function mark(atc::JuAtC.AtC{Float64}, Est::Vector{Float64}; Rbuf = 2)
 	vpop = []
 	println("Interface Tetrahedra:")
 	for i in v
-		# XType[T[:,vrefine[1]]]
 		if any(XType[Tet[:,i]].==2.0)
-			# println(i)
 			append!(vpop, i)
 		end
 	end
@@ -49,28 +45,29 @@ function mark(atc::JuAtC.AtC{Float64}, Est::Vector{Float64}; Rbuf = 2)
 	return X, TIdx
 end
 
-function refine!(atc::JuAtC.AtC{Float64}, X::Array{Float64,2}, TIdx::Vector{Int64}; filename = "out3d", meshpath="/Users/mliao/Program/Mesh/Mesher3DForSJTU/build/mesher3d", Rbuf = 2)
-	mfn = "../FIO/adaptive/$(filename).mesh"
-	run(`cp ../FIO/out3d.mesh $mfn`)
+function refine!(atc::AtC{Float64}, X::Array{Float64,2}, TIdx::Vector{Int64}; filename = "out3d", meshpath="/Users/mliao/Program/Mesh/Mesher3DForSJTU/build/mesher3d", Rbuf = 2)
+	FPath = joinpath(pathof(JuAtC)[1:end-8], "FIO/")
+	mfn = FPath*"adaptive/$(filename).mesh"
+	run(`cp $(FPath)out3d.mesh $mfn`)
 
-	rfn = "../FIO/adaptive/$(filename).remesh"
-	Main.ACFIO.write_remesh(rfn, X, TIdx)
+	rfn = FPath*"adaptive/$(filename).remesh"
+	ACFIO.write_remesh(rfn, X, TIdx)
 
-	vfn = "../FIO/adaptive/$(filename).value"
-	Main.ACFIO.write_value(vfn, atc.U)
-	rfn = "../FIO/adaptive/$(filename)"
+	vfn = FPath*"adaptive/$(filename).value"
+	ACFIO.write_value(vfn, atc.U)
+	rfn = FPath*"adaptive/$(filename)"
 	run(`$meshpath -r $rfn`)
-	ufn = "../FIO/adaptive/$(filename)_out.value"
-	U = Main.ACFIO.read_value(ufn)
+	ufn = FPath*"adaptive/$(filename)_out.value"
+	U = ACFIO.read_value(ufn)
 	# update!(atc, u)
 	
-	ofn = "../FIO/adaptive/$(filename)_out.mesh"
-	X, T = Main.ACFIO.read_mesh(ofn)
+	ofn = FPath*"adaptive/$(filename)_out.mesh"
+	X, T = ACFIO.read_mesh(ofn)
 	iBdry = findall(x->x==1.0, X[4,:])
 
 	## alternative data
 	data = Dict{String, Real}()
-	∇U, volT, J = Main.gradient(T, X, U)
+	∇U, volT, J = gradient(T, X, U)
 	wat = bulk(:W, cubic = true)
 	V0=det(cell(wat))/2
 
@@ -82,7 +79,7 @@ function refine!(atc::JuAtC.AtC{Float64}, X::Array{Float64,2}, TIdx::Vector{Int6
 	bw = atc.bw
 
 	at = bulk(:W, cubic=true)*(R+1)  # Rbuf = 2 by default and expand one layer
-	atc = Main.AtC{eltype(X)}(at, V0, X[1:3, :], U, ∇U, T[1:4, :], Ra, bw, J, wat, iBdry, data)
+	atc = AtC{eltype(X)}(at, V0, X[1:3, :], U, ∇U, T[1:4, :], Ra, bw, J, wat, iBdry, atc.calc, data)
 	atc.data["xc"] = [0.0, 0.0, 0.0]
 	atc.data["volT"] = copy(volT)
 	atc.data["XType"] = copy(X[4,:])

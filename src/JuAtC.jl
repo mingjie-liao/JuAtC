@@ -1,5 +1,8 @@
 module JuAtC
 
+using JuLIP
+using LinearAlgebra
+
 include("BGFC/AtC.jl")
 include("BGFC/FIO.jl")
 include("BGFC/Solve.jl")

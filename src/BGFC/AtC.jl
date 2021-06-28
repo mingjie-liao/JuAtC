@@ -1,19 +1,10 @@
-
-# using JuLIP: Atoms, AbstractCalculator, JVec, positions, cell, get_data
-# using JuLIP: set_cell!, set_free!, set_pbc!, set_calculator!, set_positions!, chemical_symbol
 using JuLIP
 using NeighbourLists
 using Printf
 using QHull
-# using NearestNeighbors
-# export EnergyMixing, ForceMixing, GFCEnergyMixing, prepare_qmmm!
+using LinearAlgebra
 
-import JuLIP: energy, forces
-# import JuLIP.Potentials: site_energies
-# import NeighbourLists: cutoff
-
-# include("utils.jl")
-# include("FIO.jl")
+import JuLIP: energy, forces, gradient
 
 export AtC, update!
 
@@ -31,13 +22,13 @@ mutable struct AtC{T} <: AbstractAtC{T} #where T # <: AbstractFloat
 	J::Array{T}				# Jacobian?
 	Wat::AbstractAtoms{T}			# unitCell with the same type of atomistic
 	iBdry::Vector{Int64}
+	calc::AbstractCalculator
 	data::Dict{String, Array{T}}
 end 
 
-function AtC(Ra::Int64, bw::Int64, Lmsh, h; 
+function AtC(Ra::Int64, bw::Int64, Lmsh, h, calc; 
 						Rbuf=2, sp=:W, r0=rnn(:W), defects=:SingVac, meshpath="/home/mliao/Program/Mesh/Mesher3DForSJTU/build/mesher3d")
 	## construct atomistic region
-	# at = bulk(sp, cubic=true)*2*(Ra+bw+Rbuf)
 	at = bulk(sp, cubic=true)*(Ra+bw+Rbuf)
 	set_pbc!(at, false)
 	# locate the 'center' of atomistic lattice
@@ -58,7 +49,6 @@ function AtC(Ra::Int64, bw::Int64, Lmsh, h;
 	if defects == :SingVac
 		deleteat!(at, xcidx)
 		Xat = positions(at)
-		# Lat = xcell[1] # YS: no need?
 	elseif defects == :MultiVac
 		error("Haven't implemented yet!")
 	elseif defects == :MicroCrack
@@ -81,10 +71,11 @@ function AtC(Ra::Int64, bw::Int64, Lmsh, h;
 	Xtype = zeros(Int64, length(at))
 	Xtype[iBdry_at] .= 2
 	append!(Xtype, ones(Int64, 8))  # TODO: 1 or 3?
-	fn = "../FIO/cp.mesh"
+	FPath = joinpath(pathof(JuAtC)[1:end-8], "FIO/")
+	fn = FPath*"cp.mesh"
 	ACFIO.write_mesh(fn, X, Xtype)
 	# call `mesher3d` to build coupled mesh
-	ofn = "../FIO/out3d.mesh"
+	ofn = FPath*"out3d.mesh"
 	run(`$meshpath -s $h $fn -o $ofn`)
 	X, T = ACFIO.read_mesh(ofn)
 	iBdry = findall(x->x==1.0, X[4,:])
@@ -96,7 +87,7 @@ function AtC(Ra::Int64, bw::Int64, Lmsh, h;
 	wat = bulk(:W, cubic = true)
 	V0=det(cell(wat))/2
 
-	atc = AtC{eltype(X)}(at, V0, X[1:3, :], U, ∇U, T[1:4, :], Ra, bw, J, wat, iBdry, data)
+	atc = AtC{eltype(X)}(at, V0, X[1:3, :], U, ∇U, T[1:4, :], Ra, bw, J, wat, iBdry, calc, data)
 	atc.data["xc"] = [0.0, 0.0, 0.0]
 	atc.data["volT"] = copy(volT)
 	atc.data["XType"] = copy(X[4,:])
@@ -136,7 +127,7 @@ end
 # forces(config::AtC{Float64}, U::Array{Float64,2}, calc::AbstractCalculator) = 
 		# forces(update!(config, U, Val{:U}()), calc, Val{:BGFC}())
 
-function gradient(config::AtC{Float64}, U::Array{Float64,1}, calc::AbstractCalculator)
+function gradient(config::AtC{Float64}, U::Array{Float64,1})
 	if "xfree" in keys(config.data)
 		xfree = convert(Array{Int64,1}, config.data["xfree"])
 	else 
@@ -144,18 +135,17 @@ function gradient(config::AtC{Float64}, U::Array{Float64,1}, calc::AbstractCalcu
 	end
 	Ux = zero(config.U)
 	Ux[xfree] = U
-	Frc = forces(update!(config, Ux, Val{:U}()), calc, Val{:BGFC}())
+	Frc = forces(update!(config, Ux, Val{:U}()), Val{:BGFC}())
 	return rmul!(Frc[xfree], -1.0)
 end
 
 """
 Wcb (Cauchy-Born energy density): (∇U::gradients, Wat::JuLIP.Atoms, Tidx::Tetrahedron index) ⟶ (W::energy density, dW::wrt F)
 """
-function Wcb(∇U::Array{Float64}, Wat::Atoms{Float64}, Tidx::Int64, J::Array{Float64}; calc=calc(Wat), V0=det(cell(Wat))/2)
+function Wcb(∇U::Array{Float64}, Wat::Atoms{Float64}, Tidx::Int64, J::Array{Float64}, calc::AbstractCalculator; V0=det(cell(Wat))/2)
 	∇u = ∇U[:,:,Tidx]
 
 	at = deepcopy(Wat)
-
 	if isnothing(calculator(at))
 		set_calculator!(at, calc)
 	end
@@ -177,15 +167,11 @@ function Wcb(∇U::Array{Float64}, Wat::Atoms{Float64}, Tidx::Int64, J::Array{Fl
 	tmp = JuLIP.alloc_temp_d(calc, at) # tmp.R and tmp.dV #ML: will this be a problem?
 	_, R = neigs!(tmp.R, nlist, 1)
 
-	# W = Potentials.evaluate!(tmp, calc, R)/V0 - W0
 	W = Potentials.evaluate!(tmp, calc, R) - W0
 	Potentials.evaluate_d!(tmp.dV, tmp, calc, R) # fillin tmp.dV 
 	dV = mat(tmp.dV)[:,:]
 
 	@assert size(dV,2) == size(Rref,2)
-	# if size(dV,2) ≠ size(Rref,2)
-	# 	@show Tidx
-	# end
 	dW = dV*adjoint(Rref)/adjoint(J)
 	return W, dW
 end
@@ -194,7 +180,7 @@ end
 continuum energy: (W::energy density, volT::volumes) ⟶ (Ecs::continuum elements' energy)
 """
 # function energy(W::Array{Float64,1}, volT::{Float64,1}) ML: seems useless...
-function energy(config::AtC{Float64}, calc::AbstractCalculator, model::Val{:continuum})
+function energy(config::AtC{Float64}, model::Val{:continuum})
 	if "W" in keys(config.data)
 		W = config.data["W"]
 		volT = config.data["volT"]
@@ -209,7 +195,7 @@ function energy(config::AtC{Float64}, calc::AbstractCalculator, model::Val{:cont
 		if isapprox(volT[i], 0, atol=1e-10)
 			continue
 		end
-		w, dw = Wcb(∇U, config.Wat, i, J[:,:,i]; calc=calc)
+		w, dw = Wcb(∇U, config.Wat, i, J[:,:,i], config.calc)
 		W[i] = w
 		dW[:,:,i] = dw
 	end
@@ -221,7 +207,7 @@ end
 """
 continuum forces: 
 """
-function forces(config::AtC{Float64}, calc::AbstractCalculator, model::Val{:continuum})
+function forces(config::AtC{Float64}, model::Val{:continuum})
 	Frc = zeros(Float64, 3, size(config.X,2))
 	nT = size(config.T,2)
 	if "dW" in keys(config.data)
@@ -249,7 +235,7 @@ function forces(config::AtC{Float64}, calc::AbstractCalculator, model::Val{:cont
 			continue
 		end
 		t = Tet[1:4,i]
-		w, dw = Wcb(∇U, config.Wat, i, J[:,:,i]; calc=calc)
+		w, dw = Wcb(∇U, config.Wat, i, J[:,:,i], config.calc)
 		W[i] = w
 		dW[:,:,i] = dw
 		for n = 1:length(t)-1
@@ -267,7 +253,6 @@ function bqce_prep_config!(config::AtC{Float64}; bfcn=:affine)
 	X = config.X
 	xc = config.data["xc"]
 	r = [norm(X[:,i] - xc,2) for i=1:size(X,2)]
-	# IB = findall(r .< (config.Ra+config.bw))
 	β = blendfcn(r, config.Ra, config.Ra+config.bw, bfcn)
 
 	if "volT" in keys(config.data)
@@ -296,10 +281,8 @@ function bqce_prep_config!(config::AtC{Float64}; bfcn=:affine)
 		end
 		volT[i] = max(volT[i], 0.0)
 	end
-	# volT ./= config.V0 # should we set small value like 1e-13 to zero?
 	config.data["volT"] = volT ./ config.V0
 	config.data["β"] = 1 .- β
-	# config.data["IB"] = IB
 	return 1 .- β
 end
 
@@ -321,9 +304,8 @@ end
 Atomistic forces for blending schemes, modified from `JuLIP.forces!`
 """
 function forces(at::AbstractAtoms{T}, calc::AbstractCalculator, β::Vector{T}; domain=1:length(at)) where {T}#, reset=true)
-	# frc = Array{Float64, 2}(undef, 3, length(domain))
 	frc = zeros(JVec{T}, length(at))
-	tmp = JuLIP.alloc_temp_d(calc, at) # tmp.R and tmp.dV
+	tmp = JuLIP.alloc_temp_d(calc, at) 
 	nlist = neighbourlist(at, cutoff(calc))
 	for i in domain
 		j, R = neigs!(tmp.R, nlist, i)
@@ -339,7 +321,7 @@ end
 """
 BQCE energy:
 """
-function energy(config::AtC{Float64}, calc::AbstractCalculator, model::Val{:BQCE}; bfcn=:affine)
+function energy(config::AtC{Float64}, model::Val{:BQCE}; bfcn=:affine)
 	if "β" in keys(config.data)
 		β = config.data["β"]
 		volT = config.data["volT"]
@@ -347,15 +329,15 @@ function energy(config::AtC{Float64}, calc::AbstractCalculator, model::Val{:BQCE
 		β = bqce_prep_config!(config; bfcn=bfcn)
 	end
 	@assert β[config.iBdry[1]] == 0.0
-	Ea = energy(config.at, calc, β)
-	Ec = energy(config, calc, Val{:continuum}()) 
+	Ea = energy(config.at, config.calc, β)
+	Ec = energy(config, Val{:continuum}()) 
 	return Ea + Ec
 end
 
 """
 BQCE forces:
 """
-function forces(config::AtC{Float64}, calc::AbstractCalculator, model::Val{:BQCE}; bfcn=:affine)
+function forces(config::AtC{Float64}, model::Val{:BQCE}; bfcn=:affine)
 	if "β" in keys(config.data)
 		β = config.data["β"]
 	else
@@ -363,19 +345,19 @@ function forces(config::AtC{Float64}, calc::AbstractCalculator, model::Val{:BQCE
 	end
 	@assert β[config.iBdry[1]] == 0.0
 	Fa = zero(config.X)
-	Fa[:, 1:length(config.at)] = forces(config.at, calc, β) |> mat
-	Fc = forces(config, calc, Val{:continuum}())
+	Fa[:, 1:length(config.at)] = forces(config.at, config.calc, β) |> mat
+	Fc = forces(config, Val{:continuum}())
 	return Fc + Fa
 end
 
 function bgfc_prep_config!(config::AtC{Float64}; bfcn=:affine)
 	U = deepcopy(config.U)
 	update!(config, zero(config.U), Val{:U}())
-	E0 = energy(config, calc, Val{:BQCE}(); bfcn=bfcn)
+	E0 = energy(config, Val{:BQCE}(); bfcn=bfcn)
 	β = config.data["β"]
 	@assert β[config.iBdry[1]] == 0.0
 
-	F0 = forces(config, calc, Val{:BQCE}(); bfcn=bfcn)
+	F0 = forces(config, Val{:BQCE}(); bfcn=bfcn)
 
 	xc = config.data["xc"]
 	r = [norm(config.X[:,i] - xc,2) for i=1:size(config.X,2)]
@@ -389,7 +371,7 @@ end
 
 # energy(config::AtC{Float64}, U::Array{Float64,2}, calc::AbstractCalculator) = 
 # 		energy(update!(config, U, Val{:U}()), calc, Val{:BGFC}())
-function energy(config::AtC{Float64}, U::Array{Float64,1}, calc::AbstractCalculator)
+function energy(config::AtC{Float64}, U::Array{Float64,1})
 	if "xfree" in keys(config.data)
 		xfree = convert(Array{Int64,1}, config.data["xfree"])
 	else 
@@ -397,14 +379,14 @@ function energy(config::AtC{Float64}, U::Array{Float64,1}, calc::AbstractCalcula
 	end
 	Ux = zero(config.U)
 	Ux[xfree] = U
-	E = energy(update!(config, Ux, Val{:U}()), calc, Val{:BGFC}())
+	E = energy(update!(config, Ux, Val{:U}()), Val{:BGFC}())
 	return E
 end
 
 """
 BGFC energy
 """
-function energy(config::AtC{Float64}, calc::AbstractCalculator, model::Val{:BGFC}; bfcn=:affine)
+function energy(config::AtC{Float64}, model::Val{:BGFC}; bfcn=:affine)
 	if "E0" in keys(config.data)
 		β = config.data["β"]
 		Eqce = config.data["E0"][1]
@@ -415,8 +397,8 @@ function energy(config::AtC{Float64}, calc::AbstractCalculator, model::Val{:BGFC
 	end
 
 	@assert β[config.iBdry[1]] == 0.0
-	Ea = energy(config.at, calc, β)
-	Ec = energy(config, calc, Val{:continuum}()) 
+	Ea = energy(config.at, config.calc, β)
+	Ec = energy(config, Val{:continuum}()) 
 	return Ea + Ec + sum(Fqce .* config.U)
 end
 
@@ -426,7 +408,7 @@ end
 """
 BGFC forces:
 """
-function forces(config::AtC{Float64}, calc::AbstractCalculator, model::Val{:BGFC}; bfcn=:affine)
+function forces(config::AtC{Float64}, model::Val{:BGFC}; bfcn=:affine)
 	if "F0" in keys(config.data)
 		β = config.data["β"]
 		Eqce = config.data["E0"]
@@ -438,8 +420,8 @@ function forces(config::AtC{Float64}, calc::AbstractCalculator, model::Val{:BGFC
 	@assert β[config.iBdry[1]] == 0.0
 
 	Fa = zero(config.X)
-	Fa[:, 1:length(config.at)] = forces(config.at, calc, β) |> mat
-	Fc = forces(config, calc, Val{:continuum}())
+	Fa[:, 1:length(config.at)] = forces(config.at, config.calc, β) |> mat
+	Fc = forces(config, Val{:continuum}())
 	return Fc + Fa - Fqce
 end
 
@@ -505,7 +487,7 @@ function update!(config::AtC{Float64}, U::Array{Float64,2}, attr::Val{:U})
 			if isapprox(volT[i], 0, atol=1e-10)
 				continue
 			end
-			w, dw = Wcb(∇U, config.Wat, i, config.J[:,:,i]; calc=calc)
+			w, dw = Wcb(∇U, config.Wat, i, config.J[:,:,i], config.calc)
 			config.data["W"][i] = w
 			config.data["dW"][:,:,i] = dw
 		end
@@ -543,8 +525,6 @@ function get_interface(config::AtC{Float64})
     r = [norm(Xat[:,i] - xc,Inf) for i=1:size(Xat,2)]
 	rin = config.Ra + config.bw
 	Idx = findall(x-> x > rin, r)
-    # Idx = findall(x-> x ≤ rin, r)
-    # Idx = setdiff(1:size(Xat,2), Idx)
     Iinterface = []
 
     for idx in Idx

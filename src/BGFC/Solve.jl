@@ -11,16 +11,14 @@ the help for these:
 import Optim
 import LineSearches
 
+import JuLIP: minimise!
+
 using Optim: OnceDifferentiable, optimize, ConjugateGradient, LBFGS
 using LineSearches: BackTracking
 
 using LinearAlgebra, SparseArrays
 
-# include("AtC.jl")
-
-# export minimise!
-
-import JuLIP: minimise!
+export minimise!, laplace_matrix, nsoli_condition_gradient
 
 """
 `minimise!(at::AbstractAtoms)`: geometry optimisation
@@ -51,7 +49,7 @@ the following symbols
 * `:exp` : will use `Exp(at)`
 * `:id` : will use `I`
 """
-function minimise!(config::AtC{Float64}, calc::AbstractCalculator;
+function minimise!(config::AtC{Float64};
                   method = :auto,
                   gtol=1e-5, ftol=1e-32,
                   verbose = 1,
@@ -62,8 +60,8 @@ function minimise!(config::AtC{Float64}, calc::AbstractCalculator;
                   g_calls_limit = 1_000)
 
    # create an objective function
-   obj_f = x->energy(config, x, calc)
-   obj_g! = (g, x) -> copyto!(g, gradient(config, x, calc))
+   obj_f = x->energy(config, x)
+   obj_g! = (g, x) -> copyto!(g, gradient(config, x))
 
    precond = I
    # choose the optimisation method Optim.jl
@@ -130,7 +128,7 @@ function laplace_matrix(config::AtC{Float64})
       append!(J, [3*(ja-1)+1, 3*(ja-1)+2, 3*(ja-1)+3])
       append!(Z, -1*ones(Float64, 3, 1))
    end
-   nX = 3*size(atc.X,2)
+   nX = 3*size(config.X,2)
    AM = sparse(I, J, Z, nX, nX)
    @assert issymmetric(AM)
    for i = range(1, stop=nX)
@@ -139,7 +137,7 @@ function laplace_matrix(config::AtC{Float64})
    return AM
 end
 
-function nsoli_condition_gradient(config::AtC{Float64}, U::Array{Float64,1}, calc::AbstractCalculator, P::SparseMatrixCSC)
+function nsoli_condition_gradient(config::AtC{Float64}, U::Array{Float64,1}, P::SparseMatrixCSC)
    if "xfree" in keys(config.data)
 		xfree = convert(Array{Int64,1}, config.data["xfree"])
 	else 
@@ -147,7 +145,7 @@ function nsoli_condition_gradient(config::AtC{Float64}, U::Array{Float64,1}, cal
 	end
 	Ux = zero(config.U)
 	Ux[xfree] = U
-	Frc = forces(update!(config, Ux, Val{:U}()), calc, Val{:BGFC}())
+	Frc = forces(update!(config, Ux, Val{:U}()), Val{:BGFC}())
    Frc = rmul!(Frc[xfree], -1.0)
    if size(P,1) > length(xfree)
       P = P[xfree, xfree]
