@@ -1,7 +1,7 @@
-include("AtC.jl")
-include("Solve.jl")
-include("utils.jl")
-include("../Adaptive/adaptive.jl")
+# include("AtC.jl")
+# include("Solve.jl")
+# include("utils.jl")
+# include("../Adaptive/adaptive.jl")
 # include("FIO.jl")
 using SparseArrays
 using Isaac

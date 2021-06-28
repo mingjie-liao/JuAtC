@@ -12,8 +12,10 @@ import JuLIP: energy, forces
 # import JuLIP.Potentials: site_energies
 # import NeighbourLists: cutoff
 
-include("utils.jl")
-include("FIO.jl")
+# include("utils.jl")
+# include("FIO.jl")
+
+export AtC, update!
 
 abstract type AbstractAtC{T} end
 

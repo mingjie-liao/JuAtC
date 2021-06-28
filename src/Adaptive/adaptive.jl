@@ -10,11 +10,13 @@ Adaptive functionals
 module Adaptive
 using JuLIP
 using LinearAlgebra
+
+# import JuAtC: AtC
 # include("../BGFC/AtC.jl")
 # include("../BGFC/utils.jl")
 # include("../BGFC/FIO.jl")
 
-function mark(atc::Main.AtC{Float64}, Est::Vector{Float64}; Rbuf = 2)
+function mark(atc::JuAtC.AtC{Float64}, Est::Vector{Float64}; Rbuf = 2)
 	v = sortperm(Est, rev=true)
 	TType = atc.data["TType"]
 	Tet = atc.T
@@ -47,7 +49,7 @@ function mark(atc::Main.AtC{Float64}, Est::Vector{Float64}; Rbuf = 2)
 	return X, TIdx
 end
 
-function refine!(atc::Main.AtC{Float64}, X::Array{Float64,2}, TIdx::Vector{Int64}; filename = "out3d", meshpath="/Users/mliao/Program/Mesh/Mesher3DForSJTU/build/mesher3d", Rbuf = 2)
+function refine!(atc::JuAtC.AtC{Float64}, X::Array{Float64,2}, TIdx::Vector{Int64}; filename = "out3d", meshpath="/Users/mliao/Program/Mesh/Mesher3DForSJTU/build/mesher3d", Rbuf = 2)
 	mfn = "../FIO/adaptive/$(filename).mesh"
 	run(`cp ../FIO/out3d.mesh $mfn`)
 
