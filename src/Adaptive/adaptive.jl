@@ -46,22 +46,32 @@ function mark(atc::AtC{Float64}, Est::Vector{Float64}; Rbuf = 2)
 end
 
 function refine!(atc::AtC{Float64}, X::Array{Float64,2}, TIdx::Vector{Int64}; filename = "out3d", meshpath="/Users/mliao/Program/Mesh/Mesher3DForSJTU/build/mesher3d", Rbuf = 2)
-	FPath = joinpath(pathof(JuAtC)[1:end-8], "FIO/")
-	mfn = FPath*"adaptive/$(filename).mesh"
+	if Sys.iswindows()
+		FPath = joinpath(pathof(JuAtC)[1:end-8], "FIO\\")
+		mfn = FPath*"adaptive\\$(filename).mesh"
+		rfn = FPath*"adaptive\\$(filename).remesh"
+		vfn = FPath*"adaptive\\$(filename).value"
+		fn  = FPath*"adaptive\\$(filename)"
+		ufn = FPath*"adaptive\\$(filename)_out.value"
+		ofn = FPath*"adaptive\\$(filename)_out.mesh"
+	else
+		FPath = joinpath(pathof(JuAtC)[1:end-8], "FIO/")
+		mfn = FPath*"adaptive/$(filename).mesh"
+		rfn = FPath*"adaptive/$(filename).remesh"
+		vfn = FPath*"adaptive/$(filename).value"
+		fn  = FPath*"adaptive/$(filename)"
+		ufn = FPath*"adaptive/$(filename)_out.value"
+		ofn = FPath*"adaptive/$(filename)_out.mesh"
+	end
 	run(`cp $(FPath)out3d.mesh $mfn`)
 
-	rfn = FPath*"adaptive/$(filename).remesh"
 	ACFIO.write_remesh(rfn, X, TIdx)
 
-	vfn = FPath*"adaptive/$(filename).value"
 	ACFIO.write_value(vfn, atc.U)
-	rfn = FPath*"adaptive/$(filename)"
-	run(`$meshpath -r $rfn`)
-	ufn = FPath*"adaptive/$(filename)_out.value"
+	run(`$meshpath -r $fn`)
 	U = ACFIO.read_value(ufn)
 	# update!(atc, u)
 	
-	ofn = FPath*"adaptive/$(filename)_out.mesh"
 	X, T = ACFIO.read_mesh(ofn)
 	iBdry = findall(x->x==1.0, X[4,:])
 
