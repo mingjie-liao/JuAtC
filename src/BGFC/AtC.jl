@@ -71,11 +71,16 @@ function AtC(Ra::Int64, bw::Int64, Lmsh, h, calc;
 	Xtype = zeros(Int64, length(at))
 	Xtype[iBdry_at] .= 2
 	append!(Xtype, ones(Int64, 8))  # TODO: 1 or 3?
-	FPath = joinpath(pathof(JuAtC)[1:end-8], "FIO/")
+	if Sys.iswindows()
+		FPath = joinpath(pathof(JuAtC)[1:end-8], "FIO\\")
+	else
+		FPath = joinpath(pathof(JuAtC)[1:end-8], "FIO/")
+	end
 	fn = FPath*"cp.mesh"
+	ofn = FPath*"out3d.mesh"
 	ACFIO.write_mesh(fn, X, Xtype)
 	# call `mesher3d` to build coupled mesh
-	ofn = FPath*"out3d.mesh"
+	# ofn = FPath*"out3d.mesh"
 	run(`$meshpath -s $h $fn -o $ofn`)
 	X, T = ACFIO.read_mesh(ofn)
 	iBdry = findall(x->x==1.0, X[4,:])
