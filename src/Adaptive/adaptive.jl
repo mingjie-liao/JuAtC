@@ -63,7 +63,8 @@ function refine!(atc::AtC{Float64}, X::Array{Float64,2}, TIdx::Vector{Int64}; fi
 		ufn = FPath*"adaptive/$(filename)_out.value"
 		ofn = FPath*"adaptive/$(filename)_out.mesh"
 	end
-	run(`cp $(FPath)out3d.mesh $mfn`)
+	# run(`cp $(FPath)out3d.mesh $mfn`)
+	cp(FPath*filename*".mesh", mfn, force=true)
 
 	ACFIO.write_remesh(rfn, X, TIdx)
 
